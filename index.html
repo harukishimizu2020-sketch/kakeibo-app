@@ -405,7 +405,7 @@
     </header>
 
     <div class="backup-bar">
-      <span class="backup-bar-text" id="backupBarText">データはこの端末のブラウザ内にのみ保存されます</span>
+      <span class="backup-bar-text" id="backupBarText">データはクラウドに同期されます</span>
       <button type="button" class="btn btn-sm" id="backupBarBtn">今すぐバックアップ</button>
     </div>
 
@@ -423,6 +423,11 @@
       <section class="alert-banner" id="shortfallBanner" style="display:none;">
         <span class="status-pill unpaid" style="background:rgba(208,59,59,0.12);color:var(--danger);">注意</span>
         <span id="shortfallText"></span>
+      </section>
+
+      <section class="alert-banner" id="incomeWallBanner" style="display:none;">
+        <span class="status-pill unpaid" id="incomeWallPill" style="background:rgba(208,59,59,0.12);color:var(--danger);">注意</span>
+        <span id="incomeWallBannerText"></span>
       </section>
 
       <details class="ucal-settings" id="dashVisibilityPanel">
@@ -497,6 +502,26 @@
           </section>
         </div>
         <div class="dash-min-label">目標</div>
+      </div>
+
+      <div class="dash-section" data-section="incomeWall" data-title="年収の壁アラート">
+        <button type="button" class="dash-toggle" data-section-toggle="incomeWall" title="最小化/表示切替">−</button>
+        <div class="dash-inner">
+          <section class="card">
+            <h2>年収の壁アラート</h2>
+            <p class="card-note">登録済みバイト・仕事のシフト給与合計から、今年（<span id="incomeWallYear"></span>年）の見込み年収を自動計算します。今後のシフト予定も含みます。金額はご自身で調整でき、最新の制度は国税庁・年金事務所・勤務先にご確認ください。</p>
+            <div class="stat-tile" style="margin-bottom:12px;">
+              <div class="stat-label">今年の見込み年収（全バイト合算）</div>
+              <div class="stat-value" id="incomeWallTotal">-</div>
+            </div>
+            <div class="entity-grid" id="incomeWallGrid"></div>
+            <details class="ucal-settings" style="margin-top:12px;">
+              <summary>壁の金額を編集</summary>
+              <div id="incomeWallSettings"></div>
+            </details>
+          </section>
+        </div>
+        <div class="dash-min-label">年収の壁アラート</div>
       </div>
 
       <div class="dash-section" data-section="calendar" data-title="統合カレンダー">
@@ -1395,7 +1420,8 @@
     goals: 'kakeibo_goals_v1',
     dashVisibility: 'kakeibo_dash_visibility_v1',
     themeColor: 'kakeibo_theme_color_v1',
-    lastExport: 'kakeibo_last_export_v1'
+    lastExport: 'kakeibo_last_export_v1',
+    incomeThresholds: 'kakeibo_income_thresholds_v1'
   };
 
   var THEME_COLORS = {
@@ -1410,6 +1436,7 @@
     { key: 'hero', label: '資産合計・収支サマリー' },
     { key: 'stats', label: '想定残高・支払い予定・収入予定' },
     { key: 'goals', label: '目標' },
+    { key: 'incomeWall', label: '年収の壁アラート' },
     { key: 'calendar', label: '統合カレンダー' },
     { key: 'balanceChart', label: '資産残高の推移予測' },
     { key: 'categoryChart', label: 'カテゴリ別支出' },
@@ -1445,6 +1472,13 @@
 
   var defaultJobs = [];
 
+  var defaultIncomeThresholds = [
+    { id: 'wall-103', label: '103万円の壁（所得税）', amount: 1030000 },
+    { id: 'wall-106', label: '106万円の壁（社会保険）', amount: 1060000 },
+    { id: 'wall-130', label: '130万円の壁（社会保険・扶養）', amount: 1300000 },
+    { id: 'wall-150', label: '150万円の壁（配偶者特別控除）', amount: 1500000 }
+  ];
+
   function loadSubsWithMigration() {
     var v2 = loadJSON(K.subs, null);
     if (v2) return v2;
@@ -1476,6 +1510,7 @@
     breakRule: loadJSON(K.breakRule, null) || Object.assign({}, defaultBreakRule),
     jobColorOverrides: loadJSON(K.jobColors, {}) || {},
     goals: loadJSON(K.goals, null) || [],
+    incomeThresholds: loadJSON(K.incomeThresholds, null) || JSON.parse(JSON.stringify(defaultIncomeThresholds)),
     themeColor: (function () { var t = loadJSON(K.themeColor, 'blue'); return THEME_COLORS[t] ? t : 'blue'; })(),
     lastExportedAt: (cloudData[K.lastExport] != null ? cloudData[K.lastExport] : null),
     dashboardVisibility: (function () {
@@ -1519,6 +1554,7 @@
     cloudData[K.breakRule] = state.breakRule;
     cloudData[K.jobColors] = state.jobColorOverrides;
     cloudData[K.goals] = state.goals;
+    cloudData[K.incomeThresholds] = state.incomeThresholds;
     cloudData[K.dashVisibility] = state.dashboardVisibility;
     cloudData[K.themeColor] = state.themeColor;
     cloudData[K.lastExport] = state.lastExportedAt;
@@ -1651,6 +1687,25 @@
   function shiftDurationMinutes(shift) {
     var span = shiftSpan(shift);
     return Math.max(0, (span.endMin - span.startMin) - (shift.breakMinutes || 0));
+  }
+  function shiftAbsRange(shift) {
+    var span = shiftSpan(shift);
+    var dayStart = parseIso(shift.date).getTime();
+    return { start: dayStart + span.startMin * 60000, end: dayStart + span.endMin * 60000 };
+  }
+  function shiftsOverlap(a, b) {
+    var ra = shiftAbsRange(a), rb = shiftAbsRange(b);
+    return ra.start < rb.end && rb.start < ra.end;
+  }
+  function findShiftConflicts(shift, excludeId) {
+    return state.shifts.filter(function (s) {
+      if (excludeId && s.id === excludeId) return false;
+      return shiftsOverlap(shift, s);
+    });
+  }
+  function shiftConflictLabel(sh) {
+    var job = findJob(sh.jobId);
+    return (job ? job.name : '削除済み') + ' ' + formatDateJP(sh.date) + ' ' + sh.startTime + '〜' + sh.endTime;
   }
   function computeShiftPay(shift, job) {
     if (!job) return 0;
@@ -1833,6 +1888,16 @@
     persistAll();
     applyDashboardVisibility();
   });
+  document.getElementById('incomeWallSettings').addEventListener('change', function (e) {
+    var input = e.target.closest('input[data-wall-id]'); if (!input) return;
+    var t = state.incomeThresholds.find(function (x) { return x.id === input.getAttribute('data-wall-id'); });
+    if (!t) return;
+    var v = parseFloat(input.value);
+    if (!isFinite(v) || v < 0) return;
+    t.amount = v;
+    persistAll();
+    renderAll();
+  });
 
   // ================= RENDER =================
   var els = {};
@@ -1856,7 +1921,8 @@
    'payslipJobSelect','payslipTable','payslipBody','payslipEmpty',
    'goalGrid','goalForm','goalFormTitle','goalName','goalAmount','goalBudgetFields','goalCategory','goalSavingsFields','goalAccount','goalDeadline','goalSubmitBtn','goalCancelBtn',
    'goalSummaryGrid','goalSummaryEmpty','shortfallBanner','shortfallText','exportBtn','importBtn','importFile','resetAllBtn','backupBarText','backupBarBtn',
-   'dashVisibilityGrid'
+   'dashVisibilityGrid',
+   'incomeWallBanner','incomeWallPill','incomeWallBannerText','incomeWallYear','incomeWallTotal','incomeWallGrid','incomeWallSettings'
   ].forEach(function (id) { els[id] = document.getElementById(id); });
 
   var CATS_EXPENSE = ['食費', '日用品', '交通', '娯楽', '買い物', '医療', '住居', '通信', 'サブスク', '交際費'];
@@ -2007,6 +2073,7 @@
     renderIncomeUpcomingList(salaryStatements);
     renderRecentList(virtualTx);
     renderUnifiedCalendar(virtualTx, cardStatements, salaryStatements);
+    renderIncomeWall(salaryStatements);
   }
 
   function computeBalanceSeries(virtualTx, cardStatements, salaryStatements, days) {
@@ -2030,6 +2097,65 @@
     } else {
       els.shortfallText.textContent = formatDateJP(dateIso) + 'ごろに資産残高が不足する見込みです（約' + fmtYen(shortAmount) + '円不足）。';
     }
+  }
+
+  function currentIncomeWallYearTotal(salaryStatements) {
+    var year = todayObj.getFullYear();
+    var total = 0;
+    salaryStatements.forEach(function (st) {
+      st.shifts.forEach(function (sh) {
+        if (parseIso(sh.date).getFullYear() !== year) return;
+        var job = findJob(sh.jobId);
+        if (job) total += computeShiftPay(sh, job);
+      });
+    });
+    return { year: year, total: total };
+  }
+
+  function incomeWallStatusClass(pct) {
+    if (pct >= 100) return 'over';
+    if (pct >= 90) return '';
+    return 'good';
+  }
+
+  function renderIncomeWall(salaryStatements) {
+    var yearInfo = currentIncomeWallYearTotal(salaryStatements);
+    els.incomeWallYear.textContent = yearInfo.year;
+    els.incomeWallTotal.textContent = fmtYen(yearInfo.total) + '円';
+
+    var thresholds = (state.incomeThresholds || []).slice().sort(function (a, b) { return a.amount - b.amount; });
+    els.incomeWallGrid.innerHTML = thresholds.map(function (t) {
+      var pct = t.amount > 0 ? Math.min(100, (yearInfo.total / t.amount) * 100) : 0;
+      var rawPct = t.amount > 0 ? (yearInfo.total / t.amount) * 100 : 0;
+      var fillClass = incomeWallStatusClass(rawPct);
+      return '<div class="goal-card"><div class="row1"><div><div class="name">' + escapeHtml(t.label) + '</div><div class="tag">上限 ' + fmtYen(t.amount) + '円</div></div></div>' +
+        '<div class="goal-track"><div class="goal-fill ' + fillClass + '" style="width:' + pct + '%;"></div></div>' +
+        '<div class="goal-meta"><span>' + fmtYen(yearInfo.total) + '円 / ' + fmtYen(t.amount) + '円</span><span>' + Math.round(rawPct) + '%</span></div></div>';
+    }).join('') || '<div class="empty-state">壁の設定がありません。</div>';
+
+    var nearest = null;
+    thresholds.forEach(function (t) {
+      if (t.amount <= 0) return;
+      var rawPct = (yearInfo.total / t.amount) * 100;
+      if (rawPct >= 90 && (!nearest || t.amount < nearest.amount)) nearest = t;
+    });
+    if (nearest) {
+      var rawPct = (yearInfo.total / nearest.amount) * 100;
+      els.incomeWallBanner.style.display = 'flex';
+      if (rawPct >= 100) {
+        els.incomeWallPill.textContent = '超過';
+        els.incomeWallBannerText.textContent = '今年の見込み年収が「' + nearest.label + '」（' + fmtYen(nearest.amount) + '円）を超えています。扶養・税金の条件に影響する可能性があります。';
+      } else {
+        els.incomeWallPill.textContent = '注意';
+        els.incomeWallBannerText.textContent = '今年の見込み年収が「' + nearest.label + '」（' + fmtYen(nearest.amount) + '円）の' + Math.round(rawPct) + '%に達しています。シフトの調整を検討してください。';
+      }
+    } else {
+      els.incomeWallBanner.style.display = 'none';
+    }
+
+    els.incomeWallSettings.innerHTML = '<div class="ucal-settings-grid">' + thresholds.map(function (t) {
+      return '<div class="field"><label>' + escapeHtml(t.label) + '（円）</label><input type="number" min="0" step="10000" data-wall-id="' + t.id + '" value="' + t.amount + '" /></div>';
+    }).join('') + '</div>';
   }
 
   function renderBalanceLine(virtualTx, cardStatements, salaryStatements) {
@@ -2927,16 +3053,24 @@
       breakMinutes: parseInt(els.shiftBreak.value, 10) || 0, isHoliday: els.shiftHoliday.checked,
       memo: els.shiftMemo.value.trim()
     };
-    if (state.editingShiftId) {
-      var sh = state.shifts.find(function (s) { return s.id === state.editingShiftId; });
-      if (sh) Object.assign(sh, payload);
-    } else {
-      payload.id = 'shift-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
-      state.shifts.push(payload);
+    function saveShift() {
+      if (state.editingShiftId) {
+        var sh = state.shifts.find(function (s) { return s.id === state.editingShiftId; });
+        if (sh) Object.assign(sh, payload);
+      } else {
+        payload.id = 'shift-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
+        state.shifts.push(payload);
+      }
+      persistAll();
+      resetShiftForm();
+      renderAll();
     }
-    persistAll();
-    resetShiftForm();
-    renderAll();
+    var conflicts = findShiftConflicts(payload, state.editingShiftId);
+    if (conflicts.length) {
+      showConfirmModal('他のシフトと時間が重複しています:\n' + conflicts.map(shiftConflictLabel).join('\n') + '\nこのまま登録しますか？', saveShift);
+    } else {
+      saveShift();
+    }
   });
 
   function startEditShift(id) {
@@ -2984,9 +3118,11 @@
     items.forEach(function (sh) {
       var job = findJob(sh.jobId);
       var pay = job ? computeShiftPay(sh, job) : 0;
+      var conflicts = findShiftConflicts(sh, sh.id);
+      var conflictBadge = conflicts.length ? ' <span class="cat-tag" style="color:var(--danger);" title="' + escapeHtml(conflicts.map(shiftConflictLabel).join('\n')) + '">⚠ 重複</span>' : '';
       var tr = document.createElement('tr');
       tr.innerHTML = '<td>' + formatDateJP(sh.date) + '</td>' +
-        '<td>' + escapeHtml(job ? job.name : '削除済み') + (sh.isHoliday ? ' <span class="cat-tag">祝日</span>' : '') + '</td>' +
+        '<td>' + escapeHtml(job ? job.name : '削除済み') + (sh.isHoliday ? ' <span class="cat-tag">祝日</span>' : '') + conflictBadge + '</td>' +
         '<td>' + sh.startTime + '〜' + sh.endTime + (sh.breakMinutes ? '（休憩' + sh.breakMinutes + '分）' : '') + '</td>' +
         '<td class="num">' + fmtYen(pay) + '円</td>' +
         '<td><div class="row-actions"><button class="btn-icon" data-action="edit-shift" data-id="' + sh.id + '" title="編集">✎</button><button class="btn-icon danger" data-action="delete-shift" data-id="' + sh.id + '" title="削除">✕</button></div></td>';
@@ -3160,11 +3296,20 @@
     if (!els.parseJobSelect.value) { showAlertModal('先にバイト・仕事を登録してください。'); return; }
     var job = findJob(els.parseJobSelect.value);
     parseShiftLines(text, function (parsed) {
-      pendingParsedShifts = parsed.results.map(function (r) {
+      var rows = parsed.results.map(function (r) {
         var dup = state.shifts.some(function (s) { return s.jobId === job.id && s.date === r.date; });
-        var pay = computeShiftPay({ date: r.date, startTime: r.startTime, endTime: r.endTime, breakMinutes: r.breakMinutes, isHoliday: false }, job);
-        return Object.assign({}, r, { jobId: job.id, include: !dup, duplicate: dup, pay: pay });
+        var shiftLike = { date: r.date, startTime: r.startTime, endTime: r.endTime, breakMinutes: r.breakMinutes, jobId: job.id };
+        var pay = computeShiftPay(Object.assign({ isHoliday: false }, shiftLike), job);
+        var existingConflicts = findShiftConflicts(shiftLike, null);
+        return Object.assign({}, r, { jobId: job.id, include: !dup, duplicate: dup, pay: pay, existingConflicts: existingConflicts, shiftLike: shiftLike });
       });
+      rows.forEach(function (r, idx) {
+        var batchConflicts = rows.filter(function (o, oidx) { return oidx !== idx && shiftsOverlap(r.shiftLike, o.shiftLike); });
+        var labels = r.existingConflicts.map(shiftConflictLabel).concat(batchConflicts.map(function () { return '取り込み内の他の行'; }));
+        r.conflict = labels.length > 0;
+        r.conflictLabel = labels.join(', ');
+      });
+      pendingParsedShifts = rows;
       renderParsePreview(parsed.warnings);
     });
   });
@@ -3175,7 +3320,7 @@
       var d = parseIso(r.date);
       var weekday = ['日', '月', '火', '水', '木', '金', '土'][d.getDay()];
       return '<tr>' +
-        '<td><label class="checkline"><input type="checkbox" data-idx="' + idx + '" ' + (r.include ? 'checked' : '') + ' /> ' + formatDateJP(r.date) + '（' + weekday + '）' + (r.duplicate ? ' <span class="cat-tag">登録済み</span>' : '') + '</label></td>' +
+        '<td><label class="checkline"><input type="checkbox" data-idx="' + idx + '" ' + (r.include ? 'checked' : '') + ' /> ' + formatDateJP(r.date) + '（' + weekday + '）' + (r.duplicate ? ' <span class="cat-tag">登録済み</span>' : '') + (r.conflict ? ' <span class="cat-tag" style="color:var(--danger);" title="' + escapeHtml(r.conflictLabel) + '">⚠ 重複</span>' : '') + '</label></td>' +
         '<td>' + r.startTime + '〜' + r.endTime + '</td>' +
         '<td>' + r.breakMinutes + '分</td>' +
         '<td class="num">' + fmtYen(r.pay) + '円</td>' +
@@ -3363,7 +3508,7 @@
       accounts: state.accounts, cards: state.cards, transactions: state.transactions, subscriptions: state.subscriptions,
       jobs: state.jobs, shifts: state.shifts, rate: state.rate, colorMap: state.colorMap, colorSeq: state.colorSeq,
       calendarStyles: state.calendarStyles, shiftAbbrevs: state.shiftAbbrevs, breakRule: state.breakRule,
-      jobColorOverrides: state.jobColorOverrides, goals: state.goals,
+      jobColorOverrides: state.jobColorOverrides, goals: state.goals, incomeThresholds: state.incomeThresholds,
       dashboardVisibility: state.dashboardVisibility, themeColor: state.themeColor
     };
     var blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
@@ -3378,7 +3523,7 @@
     updateBackupBar();
   }
   function updateBackupBar() {
-    if (!state.lastExportedAt) { els.backupBarText.textContent = 'データはこの端末のブラウザ内にのみ保存されます。まだバックアップしていません。'; return; }
+    if (!state.lastExportedAt) { els.backupBarText.textContent = 'データはクラウドに同期されます。念のため手元にもバックアップを取ることをおすすめします。まだバックアップしていません。'; return; }
     var mins = Math.round((Date.now() - state.lastExportedAt) / 60000);
     var label;
     if (mins < 1) label = 'たった今';
@@ -3418,6 +3563,7 @@
         state.breakRule = data.breakRule || state.breakRule;
         state.jobColorOverrides = data.jobColorOverrides || state.jobColorOverrides;
         state.goals = data.goals || state.goals;
+        state.incomeThresholds = data.incomeThresholds || state.incomeThresholds;
         state.dashboardVisibility = data.dashboardVisibility || state.dashboardVisibility;
         state.themeColor = THEME_COLORS[data.themeColor] ? data.themeColor : state.themeColor;
         persistAll();
@@ -3443,6 +3589,7 @@
         state.jobs = [];
         state.shifts = [];
         state.goals = [];
+        state.incomeThresholds = JSON.parse(JSON.stringify(defaultIncomeThresholds));
         state.rate = 155;
         state.colorMap = {};
         state.colorSeq = 0;
