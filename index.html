@@ -79,6 +79,10 @@
   header.page-head { display: flex; flex-direction: column; gap: 4px; }
   header.page-head h1 { margin: 0; font-size: 25px; font-weight: 800; letter-spacing: -0.01em; text-wrap: balance; }
   header.page-head p { margin: 0; color: var(--text-secondary); font-size: 13px; }
+  .save-status { display: inline-block; margin-top: 2px; font-size: 11.5px; color: var(--text-muted); min-height: 1.4em; }
+  .save-status.saving { color: var(--text-muted); }
+  .save-status.saved { color: var(--delta-good); }
+  .save-status.error { color: var(--danger); font-weight: 600; }
   .page-head-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
   .backup-bar {
     display: flex; align-items: center; justify-content: space-between; gap: 10px;
@@ -94,11 +98,14 @@
   }
   .theme-swatch:hover { transform: scale(1.12); }
   .theme-swatch.active { border-color: var(--text-primary); }
-  .theme-swatch[data-theme-color="blue"] { background: #2a78d6; }
   .theme-swatch[data-theme-color="pink"] { background: #db2777; }
-  .theme-swatch[data-theme-color="green"] { background: #16a34a; }
-  .theme-swatch[data-theme-color="purple"] { background: #7c3aed; }
+  .theme-swatch[data-theme-color="red"] { background: #e11d48; }
   .theme-swatch[data-theme-color="orange"] { background: #ea580c; }
+  .theme-swatch[data-theme-color="amber"] { background: #b45309; }
+  .theme-swatch[data-theme-color="green"] { background: #16a34a; }
+  .theme-swatch[data-theme-color="teal"] { background: #0d9488; }
+  .theme-swatch[data-theme-color="blue"] { background: #2a78d6; }
+  .theme-swatch[data-theme-color="purple"] { background: #7c3aed; }
 
   .tabs { display: flex; gap: 4px; background: var(--surface-1); border-radius: 16px; padding: 5px; border: 1px solid var(--border); overflow-x: auto; }
   .tab-btn {
@@ -431,15 +438,19 @@
       <div class="page-head-top">
         <h1>マイ家計簿</h1>
         <div class="theme-picker" id="themePicker">
-          <button type="button" class="theme-swatch" data-theme-color="blue" title="ブルー" aria-label="テーマカラー: ブルー"></button>
           <button type="button" class="theme-swatch" data-theme-color="pink" title="ピンク" aria-label="テーマカラー: ピンク"></button>
-          <button type="button" class="theme-swatch" data-theme-color="green" title="グリーン" aria-label="テーマカラー: グリーン"></button>
-          <button type="button" class="theme-swatch" data-theme-color="purple" title="パープル" aria-label="テーマカラー: パープル"></button>
+          <button type="button" class="theme-swatch" data-theme-color="red" title="レッド" aria-label="テーマカラー: レッド"></button>
           <button type="button" class="theme-swatch" data-theme-color="orange" title="オレンジ" aria-label="テーマカラー: オレンジ"></button>
+          <button type="button" class="theme-swatch" data-theme-color="amber" title="アンバー" aria-label="テーマカラー: アンバー"></button>
+          <button type="button" class="theme-swatch" data-theme-color="green" title="グリーン" aria-label="テーマカラー: グリーン"></button>
+          <button type="button" class="theme-swatch" data-theme-color="teal" title="ティール" aria-label="テーマカラー: ティール"></button>
+          <button type="button" class="theme-swatch" data-theme-color="blue" title="ブルー" aria-label="テーマカラー: ブルー"></button>
+          <button type="button" class="theme-swatch" data-theme-color="purple" title="パープル" aria-label="テーマカラー: パープル"></button>
         </div>
         <button type="button" class="btn btn-sm logout-btn" id="logoutBtn">ログアウト</button>
       </div>
       <p id="dateLine"></p>
+      <span id="saveStatus" class="save-status"></span>
     </header>
 
     <div class="backup-bar">
@@ -1347,29 +1358,58 @@
   var SUPABASE_ANON_KEY = 'sb_publishable_pOmCJPBbmlt2TeaQ82K9lg_cUvkBBgU';
   var supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
   var currentUserId = null;
+  var currentAccessToken = null;
   var cloudData = {};
-  var saveDebounceTimer = null;
   var saveInFlight = false;
   var saveQueued = false;
+
+  function updateSaveStatus(state) {
+    var el = document.getElementById('saveStatus');
+    if (!el) return;
+    if (state === 'saving') { el.textContent = '保存中…'; el.className = 'save-status saving'; }
+    else if (state === 'saved') { el.textContent = '保存済み'; el.className = 'save-status saved'; }
+    else if (state === 'error') { el.textContent = '保存に失敗しました（オフラインの可能性があります）'; el.className = 'save-status error'; }
+  }
 
   function flushSaveCloudData() {
     if (!currentUserId) return;
     saveInFlight = true;
+    updateSaveStatus('saving');
     supabaseClient.from('user_data').upsert({ user_id: currentUserId, data: cloudData, updated_at: new Date().toISOString() }).then(function (res) {
       saveInFlight = false;
       if (res.error) {
         console.error('save failed', res.error);
+        updateSaveStatus('error');
+      } else {
+        updateSaveStatus('saved');
       }
       if (saveQueued) { saveQueued = false; flushSaveCloudData(); }
     });
   }
   function saveCloudData() {
-    clearTimeout(saveDebounceTimer);
-    saveDebounceTimer = setTimeout(function () {
-      if (saveInFlight) { saveQueued = true; return; }
-      flushSaveCloudData();
-    }, 500);
+    if (saveInFlight) { saveQueued = true; return; }
+    flushSaveCloudData();
   }
+  function flushSaveViaBeacon() {
+    if (!currentUserId || !currentAccessToken) return;
+    try {
+      fetch(SUPABASE_URL + '/rest/v1/user_data', {
+        method: 'POST',
+        headers: {
+          'apikey': SUPABASE_ANON_KEY,
+          'Authorization': 'Bearer ' + currentAccessToken,
+          'Content-Type': 'application/json',
+          'Prefer': 'resolution=merge-duplicates'
+        },
+        body: JSON.stringify({ user_id: currentUserId, data: cloudData, updated_at: new Date().toISOString() }),
+        keepalive: true
+      });
+    } catch (e) {}
+  }
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'hidden') flushSaveViaBeacon();
+  });
+  window.addEventListener('pagehide', flushSaveViaBeacon);
 
   function startApp(initialCloudData) {
   cloudData = initialCloudData || {};
@@ -1474,11 +1514,14 @@
   };
 
   var THEME_COLORS = {
-    blue: { light: '#2a78d6', dark: '#3987e5', washLight: 'rgba(42,120,214,0.10)', washDark: 'rgba(57,135,229,0.16)' },
-    pink: { light: '#db2777', dark: '#f472b6', washLight: 'rgba(219,39,119,0.10)', washDark: 'rgba(244,114,182,0.16)' },
-    green: { light: '#16a34a', dark: '#34d399', washLight: 'rgba(22,163,74,0.10)', washDark: 'rgba(52,211,153,0.16)' },
-    purple: { light: '#7c3aed', dark: '#a78bfa', washLight: 'rgba(124,58,237,0.10)', washDark: 'rgba(167,139,250,0.16)' },
-    orange: { light: '#ea580c', dark: '#fb923c', washLight: 'rgba(234,88,12,0.10)', washDark: 'rgba(251,146,60,0.16)' }
+    pink:   { light: '#db2777', dark: '#f472b6', washLight: 'rgba(219,39,119,0.10)', washDark: 'rgba(244,114,182,0.16)', bgLight: '#fdf0f6', bgDark: '#241720' },
+    red:    { light: '#e11d48', dark: '#fb7185', washLight: 'rgba(225,29,72,0.10)', washDark: 'rgba(251,113,133,0.16)', bgLight: '#fdf0ef', bgDark: '#251615' },
+    orange: { light: '#ea580c', dark: '#fb923c', washLight: 'rgba(234,88,12,0.10)', washDark: 'rgba(251,146,60,0.16)', bgLight: '#fdf3ec', bgDark: '#211712' },
+    amber:  { light: '#b45309', dark: '#fbbf24', washLight: 'rgba(180,83,9,0.10)', washDark: 'rgba(251,191,36,0.18)', bgLight: '#fdf6e8', bgDark: '#201a10' },
+    green:  { light: '#16a34a', dark: '#34d399', washLight: 'rgba(22,163,74,0.10)', washDark: 'rgba(52,211,153,0.16)', bgLight: '#f0faf3', bgDark: '#121f18' },
+    teal:   { light: '#0d9488', dark: '#2dd4bf', washLight: 'rgba(13,148,136,0.10)', washDark: 'rgba(45,212,191,0.16)', bgLight: '#edf9f7', bgDark: '#0f1e1c' },
+    blue:   { light: '#2a78d6', dark: '#3987e5', washLight: 'rgba(42,120,214,0.10)', washDark: 'rgba(57,135,229,0.16)', bgLight: '#eff6fd', bgDark: '#131c24' },
+    purple: { light: '#7c3aed', dark: '#a78bfa', washLight: 'rgba(124,58,237,0.10)', washDark: 'rgba(167,139,250,0.16)', bgLight: '#f5f1fd', bgDark: '#1a1626' }
   };
 
   var DASH_SECTIONS = [
@@ -1886,11 +1929,11 @@
 
   // ---------- theme color ----------
   function applyThemeColor() {
-    var t = THEME_COLORS[state.themeColor] || THEME_COLORS.blue;
-    var css = '.kb-root{--accent:' + t.light + ';--accent-wash:' + t.washLight + ';}' +
-      '@media (prefers-color-scheme: dark){.kb-root{--accent:' + t.dark + ';--accent-wash:' + t.washDark + ';}}' +
-      ':root[data-theme="dark"] .kb-root{--accent:' + t.dark + ';--accent-wash:' + t.washDark + ';}' +
-      ':root[data-theme="light"] .kb-root{--accent:' + t.light + ';--accent-wash:' + t.washLight + ';}';
+    var t = THEME_COLORS[state.themeColor] || THEME_COLORS.pink;
+    var css = '.kb-root{--accent:' + t.light + ';--accent-wash:' + t.washLight + ';--surface-2:' + t.bgLight + ';}' +
+      '@media (prefers-color-scheme: dark){.kb-root{--accent:' + t.dark + ';--accent-wash:' + t.washDark + ';--surface-2:' + t.bgDark + ';}}' +
+      ':root[data-theme="dark"] .kb-root{--accent:' + t.dark + ';--accent-wash:' + t.washDark + ';--surface-2:' + t.bgDark + ';}' +
+      ':root[data-theme="light"] .kb-root{--accent:' + t.light + ';--accent-wash:' + t.washLight + ';--surface-2:' + t.bgLight + ';}';
     var tag = document.getElementById('themeStyleTag');
     if (!tag) {
       tag = document.createElement('style');
@@ -3960,8 +4003,10 @@
 
   supabaseClient.auth.onAuthStateChange(function (event, session) {
     if (session && session.user) {
+      currentAccessToken = session.access_token;
       if (!appStarted) loadCloudDataAndStart(session.user.id);
     } else {
+      currentAccessToken = null;
       authLoading.style.display = 'none';
       appRoot.style.display = 'none';
       authScreen.style.display = 'flex';
