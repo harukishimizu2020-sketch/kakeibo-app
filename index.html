@@ -187,7 +187,7 @@
   .field .hint { font-size: 11px; color: var(--text-muted); font-weight: 400; }
   .field input, .field select, .field textarea {
     padding: 9px 12px; border-radius: 12px; border: 1px solid var(--border);
-    background: var(--surface-2); color: var(--text-primary); font-size: 13px; font-family: inherit;
+    background: var(--surface-2); color: var(--text-primary); font-size: 16px; font-family: inherit;
     transition: border-color 0.15s ease;
   }
   .field input:focus, .field select:focus, .field textarea:focus { border-color: var(--accent); }
@@ -289,7 +289,7 @@
   .modal-message { font-size: 13.5px; color: var(--text-primary); line-height: 1.7; white-space: pre-wrap; margin: 0 0 16px; }
   .modal-input {
     width: 100%; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--border);
-    background: var(--surface-2); color: var(--text-primary); font-size: 14px; margin-bottom: 16px; font-family: inherit;
+    background: var(--surface-2); color: var(--text-primary); font-size: 16px; margin-bottom: 16px; font-family: inherit;
   }
   .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
@@ -348,7 +348,7 @@
   .ucal-settings-row { display: flex; align-items: center; gap: 10px; font-size: 12.5px; }
   .ucal-settings-row .name { flex: 1; color: var(--text-secondary); }
   .ucal-settings-row input[type="color"] { width: 30px; height: 30px; border: 1px solid var(--border); border-radius: 9px; padding: 2px; background: var(--surface-2); }
-  .ucal-settings-row select { padding: 6px 9px; border-radius: 9px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text-primary); font-size: 12px; }
+  .ucal-settings-row select { padding: 6px 9px; border-radius: 9px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text-primary); font-size: 16px; }
   .ucal-settings-reset { align-self: flex-start; }
 
   .stat-detail { margin-top: 8px; }
@@ -397,7 +397,7 @@
   .auth-tab.active { color: var(--accent-ink); background: var(--accent); }
   .auth-field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 14px; }
   .auth-field label { font-size: 12px; color: var(--text-secondary); font-weight: 600; }
-  .auth-field input { padding: 10px 12px; border-radius: 12px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text-primary); font-size: 14px; font-family: inherit; }
+  .auth-field input { padding: 10px 12px; border-radius: 12px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text-primary); font-size: 16px; font-family: inherit; }
   .auth-error { font-size: 12.5px; color: var(--danger); margin-bottom: 10px; min-height: 1em; }
   .auth-note { font-size: 11.5px; color: var(--text-muted); margin-top: 14px; line-height: 1.6; }
   .auth-loading { min-height: 100vh; display: flex; align-items: center; justify-content: center; color: var(--text-secondary); font-size: 14px; background: var(--surface-2); }
@@ -1363,12 +1363,12 @@
   var saveInFlight = false;
   var saveQueued = false;
 
-  function updateSaveStatus(state) {
+  function updateSaveStatus(state, detail) {
     var el = document.getElementById('saveStatus');
     if (!el) return;
     if (state === 'saving') { el.textContent = '保存中…'; el.className = 'save-status saving'; }
     else if (state === 'saved') { el.textContent = '保存済み'; el.className = 'save-status saved'; }
-    else if (state === 'error') { el.textContent = '保存に失敗しました（オフラインの可能性があります）'; el.className = 'save-status error'; }
+    else if (state === 'error') { el.textContent = '保存に失敗しました: ' + (detail || '不明なエラー'); el.className = 'save-status error'; }
   }
 
   function flushSaveCloudData() {
@@ -1379,7 +1379,7 @@
       saveInFlight = false;
       if (res.error) {
         console.error('save failed', res.error);
-        updateSaveStatus('error');
+        updateSaveStatus('error', (res.error.message || res.error.code || JSON.stringify(res.error)));
       } else {
         updateSaveStatus('saved');
       }
